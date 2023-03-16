@@ -19,6 +19,7 @@ import torch.distributed as dist
 
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import accuracy, AverageMeter
+from timm.models import create_model
 
 from config import get_config
 from models import build_model
@@ -28,7 +29,7 @@ from optimizer import build_optimizer
 from logger import create_logger
 from utils import load_checkpoint, load_pretrained, save_checkpoint, NativeScalerWithGradNormCount, auto_resume_helper, \
     reduce_tensor
-
+from models import *
 
 def parse_option():
     parser = argparse.ArgumentParser('Swin Transformer training and evaluation script', add_help=False)
@@ -42,7 +43,8 @@ def parse_option():
 
     # easy config modification
     parser.add_argument('--batch-size', type=int, help="batch size for single GPU")
-    parser.add_argument('--data-path', type=str, help='path to dataset')
+    parser.add_argument('--data-path', default = './data/cifar-100-python',
+                        type=str, help='path to dataset')
     parser.add_argument('--zip', action='store_true', help='use zipped dataset instead of folder dataset')
     parser.add_argument('--cache-mode', type=str, default='part', choices=['no', 'full', 'part'],
                         help='no: no cache, '
@@ -86,6 +88,7 @@ def main(config):
 
     logger.info(f"Creating model:{config.MODEL.TYPE}/{config.MODEL.NAME}")
     model = build_model(config)
+    
     logger.info(str(model))
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

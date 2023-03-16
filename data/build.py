@@ -116,9 +116,12 @@ def build_dataset(is_train, config):
             ann_file = prefix + "_map_val.txt"
         dataset = IN22KDATASET(config.DATA.DATA_PATH, ann_file, transform)
         nb_classes = 21841
-    else:
-        raise NotImplementedError("We only support ImageNet Now.")
-
+    elif config.DATA.DATASET == 'cifar-100':
+        prefix = 'train' if is_train else 'val'
+        root = os.path.join(config.DATA.DATA_PATH, prefix)
+        dataset = datasets.CIFAR100(root, is_train, transform=transform, download=True)
+        nb_classes = 100
+        
     return dataset, nb_classes
 
 

@@ -2,7 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+data
+output
 # launch bash
 *.sh
 # nsight system report files
@@ -12,6 +13,8 @@ __pycache__/
 # C extensions
 *.so
 
+slurm-logs
+slurm-scripts
 # Distribution / packaging
 .Python
 build/

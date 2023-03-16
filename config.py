@@ -21,9 +21,9 @@ _C.DATA = CN()
 # Batch size for a single GPU, could be overwritten by command line argument
 _C.DATA.BATCH_SIZE = 128
 # Path to dataset, could be overwritten by command line argument
-_C.DATA.DATA_PATH = ''
+_C.DATA.DATA_PATH = './data/cifar-100-python/'
 # Dataset name
-_C.DATA.DATASET = 'imagenet'
+_C.DATA.DATASET = 'cifar-100'
 # Input image size
 _C.DATA.IMG_SIZE = 224
 # Interpolation to resize image (random, bilinear, bicubic)
@@ -57,7 +57,7 @@ _C.MODEL.PRETRAINED = ''
 # Checkpoint to resume, could be overwritten by command line argument
 _C.MODEL.RESUME = ''
 # Number of classes, overwritten in data preparation
-_C.MODEL.NUM_CLASSES = 1000
+_C.MODEL.NUM_CLASSES = 100
 # Dropout rate
 _C.MODEL.DROP_RATE = 0.0
 # Drop path rate
@@ -149,7 +149,7 @@ _C.TRAIN.START_EPOCH = 0
 _C.TRAIN.EPOCHS = 300
 _C.TRAIN.WARMUP_EPOCHS = 20
 _C.TRAIN.WEIGHT_DECAY = 0.05
-_C.TRAIN.BASE_LR = 5e-4
+_C.TRAIN.BASE_LR = 1e-3
 _C.TRAIN.WARMUP_LR = 5e-7
 _C.TRAIN.MIN_LR = 5e-6
 # Clip gradient norm
@@ -335,6 +335,7 @@ def update_config(config, args):
 
     # set local rank for distributed training
     config.LOCAL_RANK = args.local_rank
+    # config.MODEL.NAME = dense_deit_Q_Res3_uniform_1_relu_tiny_patch16_224
 
     # output folder
     config.OUTPUT = os.path.join(config.OUTPUT, config.MODEL.NAME, config.TAG)

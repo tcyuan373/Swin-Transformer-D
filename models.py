@@ -8,6 +8,24 @@ from timm.models.layers import trunc_normal_
 
 from models.swin_transformer_v2 import *
 
+__all__ = [
+    'deit_tiny_patch16_224', 'deit_small_patch16_224', 'deit_base_patch16_224',
+    'deit_tiny_distilled_patch16_224', 'deit_small_distilled_patch16_224',
+    'deit_base_distilled_patch16_224', 'deit_base_patch16_384',
+    'deit_base_distilled_patch16_384',
+    # our versions
+
+    'dense_deit_RF_pre_tiny_patch16_224', 'dense_deit_RF_post_tiny_patch16_224', 
+
+    'deit_debug_post_tiny_patch16_224',
+    'dense_deit_Q_Res_tiny_patch16_224', 
+    'dense_deit_V_Res_post_tiny_patch16_224',
+    'dense_deit_Q_Res3_uniform_1_relu_tiny_patch16_224',
+    'dense_deit_Q_Res3_post_uniform_1_relu_tiny_patch16_224',
+
+    'deit_tiny_norm_exp_none_patch16_224',
+    'dense_deit_Q_Res_tiny_patch16_224_none'
+]
 
 @register_model
 def dense_deit_Q_Res3_uniform_1_relu_tiny_patch16_224(pretrained=False, **kwargs):
