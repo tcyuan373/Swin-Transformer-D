@@ -5,7 +5,6 @@ __pycache__/
 data
 output
 # launch bash
-*.sh
 # nsight system report files
 *.nsys-rep
 *.sqlite
