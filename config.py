@@ -155,7 +155,7 @@ _C.TRAIN.MIN_LR = 5e-6
 # Clip gradient norm
 _C.TRAIN.CLIP_GRAD = 5.0
 # Auto resume from latest checkpoint
-_C.TRAIN.AUTO_RESUME = True
+_C.TRAIN.AUTO_RESUME = False
 # Gradient accumulation steps
 # could be overwritten by command line argument
 _C.TRAIN.ACCUMULATION_STEPS = 1
@@ -245,7 +245,7 @@ _C.OUTPUT = ''
 # Tag of experiment, overwritten by command line argument
 _C.TAG = 'default'
 # Frequency to save checkpoint
-_C.SAVE_FREQ = 1
+_C.SAVE_FREQ = 50
 # Frequency to logging info
 _C.PRINT_FREQ = 10
 # Fixed random seed
@@ -304,7 +304,7 @@ def update_config(config, args):
     if _check_args('accumulation_steps'):
         config.TRAIN.ACCUMULATION_STEPS = args.accumulation_steps
     if _check_args('use_checkpoint'):
-        config.TRAIN.USE_CHECKPOINT = True
+        config.TRAIN.USE_CHECKPOINT = False
     if _check_args('amp_opt_level'):
         print("[warning] Apex amp has been deprecated, please use pytorch amp instead!")
         if args.amp_opt_level == 'O0':
