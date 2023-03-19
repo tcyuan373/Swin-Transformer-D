@@ -8,7 +8,7 @@ output
 # nsight system report files
 *.nsys-rep
 *.sqlite
-
+*pth
 # C extensions
 *.so
 

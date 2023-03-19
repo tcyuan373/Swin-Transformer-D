@@ -133,7 +133,7 @@ def build_transform(is_train, config):
             input_size=config.DATA.IMG_SIZE,
             is_training=True,
             color_jitter=config.AUG.COLOR_JITTER if config.AUG.COLOR_JITTER > 0 else None,
-            auto_augment=config.AUG.AUTO_AUGMENT if config.AUG.AUTO_AUGMENT != 'none' else None,
+            # auto_augment=config.AUG.AUTO_AUGMENT if config.AUG.AUTO_AUGMENT != 'none' else None,
             re_prob=config.AUG.REPROB,
             re_mode=config.AUG.REMODE,
             re_count=config.AUG.RECOUNT,

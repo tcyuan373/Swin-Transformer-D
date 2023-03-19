@@ -21,6 +21,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import accuracy, AverageMeter
 from timm.models import create_model
 
+
 from config import get_config
 from models import build_model
 from data import build_loader
@@ -31,7 +32,10 @@ from utils import load_checkpoint, load_pretrained, save_checkpoint, NativeScale
     reduce_tensor
 from models import *
 from functorch import make_functional_with_buffers, vmap, grad
-# import torchopt
+import torchopt
+from tqdm import tqdm
+
+
 
 
 def parse_option():
@@ -112,14 +116,16 @@ def main(config):
     else:
         lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
 
-    if config.AUG.MIXUP > 0.:
-        # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
-    elif config.MODEL.LABEL_SMOOTHING > 0.:
-        criterion = LabelSmoothingCrossEntropy(smoothing=config.MODEL.LABEL_SMOOTHING)
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
-
+    # if config.AUG.MIXUP > 0.:
+    #     # smoothing is handled with mixup label transform
+    #     criterion = SoftTargetCrossEntropy()
+    # elif config.MODEL.LABEL_SMOOTHING > 0.:
+    #     criterion = LabelSmoothingCrossEntropy(smoothing=config.MODEL.LABEL_SMOOTHING)
+    # else:
+    #     criterion = torch.nn.CrossEntropyLoss()
+        
+    criterion = SoftTargetCrossEntropy()
+    
     max_accuracy = 0.0
 
     if config.TRAIN.AUTO_RESUME:
@@ -150,36 +156,25 @@ def main(config):
         throughput(data_loader_val, model, logger)
         return
     
-    
-    train_one_epoch(config, model, criterion, data_loader_train, optimizer, 0, mixup_fn, lr_scheduler,
+    logger.info("Start training")
+    start_time = time.time()
+    for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
+        data_loader_train.sampler.set_epoch(epoch)
+
+        train_one_epoch(config, model, criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler,
                         loss_scaler)
-    acc1, acc5, loss = validate(config, data_loader_val, model)
-    logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
-    max_accuracy = max(max_accuracy, acc1)
-    logger.info(f'Max accuracy: {max_accuracy:.2f}%')
-    
-    
-    
-    
-    # logger.info("Start training")
-    # start_time = time.time()
-    # for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
-    #     data_loader_train.sampler.set_epoch(epoch)
+        if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
+            save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
+                            logger)
 
-    #     train_one_epoch(config, model, criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler,
-    #                     loss_scaler)
-    #     if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
-    #         save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
-    #                         logger)
+        acc1, acc5, loss = validate(config, data_loader_val, model)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+        max_accuracy = max(max_accuracy, acc1)
+        logger.info(f'Max accuracy: {max_accuracy:.2f}%')
 
-    #     acc1, acc5, loss = validate(config, data_loader_val, model)
-    #     logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
-    #     max_accuracy = max(max_accuracy, acc1)
-    #     logger.info(f'Max accuracy: {max_accuracy:.2f}%')
-
-    # total_time = time.time() - start_time
-    # total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    # logger.info('Training time {}'.format(total_time_str))
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    logger.info('Training time {}'.format(total_time_str))
 
 
 def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mixup_fn, lr_scheduler, loss_scaler):
@@ -203,6 +198,10 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
 
         with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
             outputs = model(samples)
+            
+        # print(f"output shape: {outputs.shape}")
+        # print(f"targets shape: {targets.shape}")
+        
         loss = criterion(outputs, targets)
         loss = loss / config.TRAIN.ACCUMULATION_STEPS
 
@@ -316,6 +315,7 @@ def fmain(config):
     logger.info(f"Creating model:{config.MODEL.TYPE}/{config.MODEL.NAME}")
     model = build_model(config)
     
+    
     logger.info(str(model))
     
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -325,28 +325,35 @@ def fmain(config):
         logger.info(f"number of GFLOPs: {flops / 1e9}")
         
     model.cuda()
-    fmodel, params, buffers = make_functional_with_buffers(model)
     
-    # fmodel, fparams, fbuffers = make_functional_with_buffers(model)
-
     model_without_ddp = model
-
-    optimizer = build_optimizer(config, model)
+    # optim for obtain lr per epoch
+    # optim = build_optimizer(config, model)
+    
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False)
     loss_scaler = NativeScalerWithGradNormCount()
+      
+    
+    # counter = tqdm(range(len(data_loader_train) * config.TRAIN.EPOCHS))
 
-    if config.TRAIN.ACCUMULATION_STEPS > 1:
-        lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train) // config.TRAIN.ACCUMULATION_STEPS)
-    else:
-        lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
+    # if config.TRAIN.ACCUMULATION_STEPS > 1:
+    #     lr_scheduler = build_scheduler(config, optim, len(data_loader_train) // config.TRAIN.ACCUMULATION_STEPS)
+    # else:
+    #     lr_scheduler = build_scheduler(config, optim, len(data_loader_train))
 
+    # def get_scheduler_lr():
+    #     ret = lr_scheduler.get_epoch_values(epoch)
+    #     return ret
+        
+    
+    
     # if config.AUG.MIXUP > 0.:
     #     # smoothing is handled with mixup label transform
     #     criterion = SoftTargetCrossEntropy()
     # elif config.MODEL.LABEL_SMOOTHING > 0.:
     #     criterion = LabelSmoothingCrossEntropy(smoothing=config.MODEL.LABEL_SMOOTHING)
     # else:
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = SoftTargetCrossEntropy()
 
     max_accuracy = 0.0
 
@@ -362,12 +369,12 @@ def fmain(config):
         else:
             logger.info(f'no checkpoint found in {config.OUTPUT}, ignoring auto resume')
 
-    if config.MODEL.RESUME:
-        max_accuracy = load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, loss_scaler, logger)
-        acc1, acc5, loss = validate(config, data_loader_val, model)
-        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
-        if config.EVAL_MODE:
-            return
+    # if config.MODEL.RESUME:
+    #     max_accuracy = load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, loss_scaler, logger)
+    #     acc1, acc5, loss = validate(config, data_loader_val, model)
+    #     logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+    #     if config.EVAL_MODE:
+    #         return
 
     if config.MODEL.PRETRAINED and (not config.MODEL.RESUME):
         load_pretrained(config, model_without_ddp, logger)
@@ -378,46 +385,53 @@ def fmain(config):
         throughput(data_loader_val, model, logger)
         return
     
+    
+    fmodel, params, buffers = make_functional_with_buffers(model)
+    
     del(model)
-    fmodel_train_one_epoch(config, fmodel, params, buffers, criterion, data_loader_train, \
-                            optimizer, 0, mixup_fn, lr_scheduler, loss_scaler)
+    
+    optimizer = torchopt.adamw(eps=config.TRAIN.OPTIMIZER.EPS, betas=config.TRAIN.OPTIMIZER.BETAS, \
+                            lr = 1e-3,\
+                            # lr=config.TRAIN.BASE_LR, \
+                            weight_decay=config.TRAIN.WEIGHT_DECAY)
+    opt_state = optimizer.init(params)
     
     
-    # logger.info("Start training")
-    # start_time = time.time()
-    # for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
-    #     data_loader_train.sampler.set_epoch(epoch)
+    logger.info("Start training")
+    start_time = time.time()
+    for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
+        data_loader_train.sampler.set_epoch(epoch)
 
-    #     fmodel_train_one_epoch(config, fmodel, fparams, fbuffers, criterion, data_loader_train, \
-    #                         optimizer, epoch, mixup_fn, lr_scheduler, loss_scaler)
-    #     # train_one_epoch(config, model, criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler,
-    #     #                 loss_scaler)
-    #     if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
-    #         save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
-    #                         logger)
+        fmodel_train(config, fmodel, params, buffers, criterion, data_loader_train, \
+                            optimizer, epoch, mixup_fn,\
+                            opt_state)
+        # if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
+        #     save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
+        #                     logger)
 
-    #     acc1, acc5, loss = func_validate(config, data_loader_val, fmodel, fparams, fbuffers)
-    #     logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
-    #     max_accuracy = max(max_accuracy, acc1)
-    #     logger.info(f'Max accuracy: {max_accuracy:.2f}%')
+        acc1, acc5, loss = func_validate(config, data_loader_val, fmodel, params, buffers)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+        max_accuracy = max(max_accuracy, acc1)
+        logger.info(f'Max accuracy: {max_accuracy:.2f}%')
 
-    # total_time = time.time() - start_time
-    # total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    # logger.info('Training time {}'.format(total_time_str))
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    logger.info('Training time {}'.format(total_time_str))
         
     
-
-def fmodel_train_one_epoch(config, fmodel, params, buffers, criterion, data_loader, optimizer, epoch, mixup_fn, lr_scheduler, loss_scaler):
+        
+def fmodel_train(config, fmodel, params, buffers, criterion, data_loader, optimizer,\
+                epoch, mixup_fn, opt_state):
 
     fmodel.train()
-    optimizer.zero_grad()
-
+    # optimizer.zero_grad()
     num_steps = len(data_loader)
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     norm_meter = AverageMeter()
-    scaler_meter = AverageMeter()
-
+    # scaler_meter = AverageMeter()
+    ft_avg_grads = []
+    
     start = time.time()
     end = time.time()
     
@@ -425,26 +439,25 @@ def fmodel_train_one_epoch(config, fmodel, params, buffers, criterion, data_load
         batch = sample.unsqueeze(0)
         targets = target.unsqueeze(0)
 
-        # print(f"fmodel is: {fmodel}")
         predictions = fmodel(params, buffers, batch) 
         loss = criterion(predictions, targets)
         return loss
     
     
-    
     for idx, (samples, targets) in enumerate(data_loader):
         samples = samples.cuda(non_blocking=True)
         targets = targets.cuda(non_blocking=True)
-        # print(f"samples' shape:{samples.shape}")
-        # print(f"targets' shape:{targets.shape}")
-
-        # for sample, target in zip(samples, targets):
+        
         ft_compute_grad = grad(compute_loss_stateless_model)
-        ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0), randomness='same')
+        ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0), randomness='same', chunk_size=8)
         ft_per_sample_grads = ft_compute_sample_grad(params, buffers, samples, targets)
         
-        for per_sample_grad, ft_per_sample_grad in zip(ft_per_sample_grads, ft_per_sample_grads):
-            assert torch.allclose(per_sample_grad, ft_per_sample_grad, atol=3e-3, rtol=1e-5)
+            
+        with torch.no_grad():
+            ft_avg_grads = [g.mean(axis=0) for g in ft_per_sample_grads]
+            updates, opt_state = optimizer.update(ft_avg_grads, opt_state, params=params)
+            torchopt.apply_updates(params, tuple(updates), inplace=True)
+            # counter.update(1)
             
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
@@ -454,47 +467,37 @@ def fmodel_train_one_epoch(config, fmodel, params, buffers, criterion, data_load
             # outputs = fmodel(samples)
         loss = criterion(outputs, targets)
         loss = loss / config.TRAIN.ACCUMULATION_STEPS
+        
+        # ft_batch_grads = torch.autograd.grad(loss, params) 
+        
+        
 
-        # this attribute is added by timm on one optimizer (adahessian)
-        # is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
-        # grad_norm = loss_scaler(loss, optimizer, clip_grad=config.TRAIN.CLIP_GRAD,
-        #                         parameters=fmodel.parameters(), create_graph=is_second_order,
-        #                         update_grad=(idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0)
-        if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
-            optimizer.zero_grad()
-            lr_scheduler.step_update((epoch * num_steps + idx) // config.TRAIN.ACCUMULATION_STEPS)
-        loss_scale_value = loss_scaler.state_dict()["scale"]
-
-        torch.cuda.synchronize()
+        # torch.cuda.synchronize()
 
         loss_meter.update(loss.item(), targets.size(0))
-        # if grad_norm is not None:  # loss_scaler return None if not update
-        #     norm_meter.update(grad_norm)
-        scaler_meter.update(loss_scale_value)
         batch_time.update(time.time() - end)
         end = time.time()
 
         if idx % config.PRINT_FREQ == 0:
-            lr = optimizer.param_groups[0]['lr']
-            wd = optimizer.param_groups[0]['weight_decay']
             memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
             etas = batch_time.avg * (num_steps - idx)
             logger.info(
                 f'Train: [{epoch}/{config.TRAIN.EPOCHS}][{idx}/{num_steps}]\t'
-                f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.6f}\t wd {wd:.4f}\t'
+                f'eta {datetime.timedelta(seconds=int(etas))} \t'
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})\t'
                 f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
-                # f'grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t'
                 # f'loss_scale {scaler_meter.val:.4f} ({scaler_meter.avg:.4f})\t'
                 f'mem {memory_used:.0f}MB')
     epoch_time = time.time() - start
     logger.info(f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}")
+    torch.cuda.empty_cache()
 
 @torch.no_grad()
 def func_validate(config, data_loader, fmodel, fparams, fbuffers):
     criterion = torch.nn.CrossEntropyLoss()
     fmodel.eval()
-
+    # for i, p in enumerate(model.parameters()):
+    #     p.data.copy_(fparams[i])
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     acc1_meter = AverageMeter()
@@ -507,7 +510,7 @@ def func_validate(config, data_loader, fmodel, fparams, fbuffers):
 
         # compute output
         with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            output = fmodel(fparams, fbuffers, images)
+            output = fmodel(fparams, fbuffers,images)
 
         # measure accuracy and record loss
         loss = criterion(output, target)

@@ -120,6 +120,10 @@ def load_pretrained(config, model, logger):
             logger.warning(f"Error in loading classifier head, re-init classifier head to 0")
 
     msg = model.load_state_dict(state_dict, strict=False)
+    print(f"model head weight shape is: {model.head.weight.shape}")
+    print(f"model head bias shape is: {model.head.bias.shape}")
+    # replacing model head with current settings
+    
     logger.warning(msg)
 
     logger.info(f"=> loaded successfully '{config.MODEL.PRETRAINED}'")

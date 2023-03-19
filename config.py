@@ -146,7 +146,7 @@ _C.MODEL.SIMMIM.NORM_TARGET.PATCH_SIZE = 47
 # -----------------------------------------------------------------------------
 _C.TRAIN = CN()
 _C.TRAIN.START_EPOCH = 0
-_C.TRAIN.EPOCHS = 300
+_C.TRAIN.EPOCHS = 50
 _C.TRAIN.WARMUP_EPOCHS = 20
 _C.TRAIN.WEIGHT_DECAY = 0.05
 _C.TRAIN.BASE_LR = 1e-3
@@ -208,7 +208,7 @@ _C.AUG.REMODE = 'pixel'
 # Random erase count
 _C.AUG.RECOUNT = 1
 # Mixup alpha, mixup enabled if > 0
-_C.AUG.MIXUP = 0.8
+_C.AUG.MIXUP = 0
 # Cutmix alpha, cutmix enabled if > 0
 _C.AUG.CUTMIX = 1.0
 # Cutmix min/max ratio, overrides alpha and enables cutmix if set
