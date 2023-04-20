@@ -496,7 +496,7 @@ class C_M4_Dataset(Dataset):
         else:
             return inps.unsqueeze(0).unsqueeze(-1), tgts.unsqueeze(0).unsqueeze(-1)
 
-class CIFAR100(Dataset):
+class dist_CIFAR100(Dataset):
     def __init__(self, config, args, node_cnt, microbatch, test_B=128, device=torch.device('cuda')) -> None:
         super().__init__()
         self.node_cnt = node_cnt
@@ -504,13 +504,14 @@ class CIFAR100(Dataset):
         normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         self.data_path = config.DATA.DATA_PATH
-        self.transform = build_trainsform()
+        self.transform_train = build_transform(True, config)
+        self.transform_test = build_transform(False, config)
         
         if not os.path.exists(self.data_path):
             dset = []
             for _ in range(5):
                 dset.extend(list(DataLoader(
-                    torchvision.datasets.CIFAR100(root='./data', train=True, transform=build_trainsform(True, config), 
+                    torchvision.datasets.CIFAR100(root='./data', train=True, transform=self.transform_train, 
                                                 download=True), batch_size=128, shuffle=True)))
             images = torch.vstack([p[0] for p in dset])
             targets = torch.cat([p[1] for p in dset])
@@ -525,12 +526,13 @@ class CIFAR100(Dataset):
         self.indices.local_indices = self.indices.local_indices.view(-1)
         self.indices.individual_batch_cnt = len(self.indices.local_indices)
         self.trainloader = DataLoader(
-            torchvision.datasets.CIFAR100(root='./data', train=True, transform=build_transform(True, config),\
+            torchvision.datasets.CIFAR100(root='./data', train=True, transform=self.transform_train,\
                 download=True), batch_size=128, shuffle=True
         )
         self.testloader = DataLoader(
             torchvision.datasets.CIFAR100(
-            root='./data', train=False, transform=build_transform(False, config), batch_size=test_B, shuffle=False)
+            root='./data', train=False, transform=self.transform_test, batch_size=test_B, shuffle=False)
+            )
 
         self.images = self.images[self.indices.local_indices].to(
             device=self.device)

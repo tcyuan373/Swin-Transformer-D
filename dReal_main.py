@@ -35,8 +35,8 @@ import torchopt
 
 
 # for d-grab / online pb experiments
-import algo
-import dReal_data
+from algo import *
+from dReal_data import dist_CIFAR100
 import dReal_model
 from tqdm import tqdm
 
@@ -75,8 +75,26 @@ def parse_option():
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
     parser.add_argument('--throughput', action='store_true', help='Test throughput only')
 
-    # distributed training
+    # distributed training and online balance
     parser.add_argument("--local_rank", type=int, required=True, help='local rank for DistributedDataParallel')
+    parser.add_argument(
+    "--sorter",
+    type=str,
+    default="recursivebalance",
+    choices=[
+        "pairbalance",
+        "recursivebalance",
+        "grab",
+        "rr",
+    ])
+    parser.add_argument(
+        "--recursive_depth",
+        type=int,
+        default=5,)
+    parser.add_argument(
+        "--microbatch",
+        type=int,
+        default=-1,)
 
     # for acceleration
     parser.add_argument('--fused_window_process', action='store_true',
@@ -317,7 +335,19 @@ def func_validate(config, data_loader, fmodel, fparams, fbuffers):
 
 if __name__ == '__main__':
     args, config = parse_option()
+    device = torch.device(f'cuda')
+    sorter = {
+    # "grab": lambda: GraB(n=n, d=d, device=device),
+    "grab": lambda: GraBOptimized(n=n, d=d, device=device),
+    "rr": lambda: RandomReshuffling(n, device=device),
+    "recursivebalance": lambda: RecursiveGraB.create_balance_trees(args.recursive_depth, n, d, device=device),
+    }[args.sorter]()
 
+
+    dist_data = dist_CIFAR100(config, args, node_cnt, micro_batch)
+    
+    
+    
     if config.AMP_OPT_LEVEL:
         print("[warning] Apex amp has been deprecated, please use pytorch amp instead!")
 
