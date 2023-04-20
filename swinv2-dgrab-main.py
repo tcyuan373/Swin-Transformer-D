@@ -21,6 +21,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import accuracy, AverageMeter
 from timm.models import create_model
 
+
 from config import get_config
 from models import build_model
 from data import build_loader
@@ -32,6 +33,9 @@ from utils import load_checkpoint, load_pretrained, save_checkpoint, NativeScale
 from models import *
 from functorch import make_functional_with_buffers, vmap, grad
 import torchopt
+from tqdm import tqdm
+
+
 
 
 def parse_option():
@@ -112,14 +116,16 @@ def main(config):
     else:
         lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
 
-    if config.AUG.MIXUP > 0.:
-        # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
-    elif config.MODEL.LABEL_SMOOTHING > 0.:
-        criterion = LabelSmoothingCrossEntropy(smoothing=config.MODEL.LABEL_SMOOTHING)
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
-
+    # if config.AUG.MIXUP > 0.:
+    #     # smoothing is handled with mixup label transform
+    #     criterion = SoftTargetCrossEntropy()
+    # elif config.MODEL.LABEL_SMOOTHING > 0.:
+    #     criterion = LabelSmoothingCrossEntropy(smoothing=config.MODEL.LABEL_SMOOTHING)
+    # else:
+    #     criterion = torch.nn.CrossEntropyLoss()
+        
+    criterion = SoftTargetCrossEntropy()
+    
     max_accuracy = 0.0
 
     if config.TRAIN.AUTO_RESUME:
@@ -150,36 +156,25 @@ def main(config):
         throughput(data_loader_val, model, logger)
         return
     
-    
-    train_one_epoch(config, model, criterion, data_loader_train, optimizer, 0, mixup_fn, lr_scheduler,
+    logger.info("Start training")
+    start_time = time.time()
+    for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
+        data_loader_train.sampler.set_epoch(epoch)
+
+        train_one_epoch(config, model, criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler,
                         loss_scaler)
-    acc1, acc5, loss = validate(config, data_loader_val, model)
-    logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
-    max_accuracy = max(max_accuracy, acc1)
-    logger.info(f'Max accuracy: {max_accuracy:.2f}%')
-    
-    
-    
-    
-    # logger.info("Start training")
-    # start_time = time.time()
-    # for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
-    #     data_loader_train.sampler.set_epoch(epoch)
+        if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
+            save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
+                            logger)
 
-    #     train_one_epoch(config, model, criterion, data_loader_train, optimizer, epoch, mixup_fn, lr_scheduler,
-    #                     loss_scaler)
-    #     if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
-    #         save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
-    #                         logger)
+        acc1, acc5, loss = validate(config, data_loader_val, model)
+        logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
+        max_accuracy = max(max_accuracy, acc1)
+        logger.info(f'Max accuracy: {max_accuracy:.2f}%')
 
-    #     acc1, acc5, loss = validate(config, data_loader_val, model)
-    #     logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
-    #     max_accuracy = max(max_accuracy, acc1)
-    #     logger.info(f'Max accuracy: {max_accuracy:.2f}%')
-
-    # total_time = time.time() - start_time
-    # total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    # logger.info('Training time {}'.format(total_time_str))
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    logger.info('Training time {}'.format(total_time_str))
 
 
 def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mixup_fn, lr_scheduler, loss_scaler):
@@ -203,6 +198,10 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
 
         with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
             outputs = model(samples)
+            
+        # print(f"output shape: {outputs.shape}")
+        # print(f"targets shape: {targets.shape}")
+        
         loss = criterion(outputs, targets)
         loss = loss / config.TRAIN.ACCUMULATION_STEPS
 
@@ -369,6 +368,13 @@ def fmain(config):
                             weight_decay=config.TRAIN.WEIGHT_DECAY)
     opt_state = optimizer.init(params)
     
+    def compute_loss_stateless_model(params, buffers, sample, target):
+        batch = sample.unsqueeze(0)
+        targets = target.unsqueeze(0)
+
+        predictions = fmodel(params, buffers, batch) 
+        loss = criterion(predictions, targets)
+        return loss
     
     logger.info("Start training")
     start_time = time.time()
@@ -377,7 +383,7 @@ def fmain(config):
 
         fmodel_train(config, fmodel, params, buffers, criterion, data_loader_train, \
                             optimizer, epoch, mixup_fn,\
-                            opt_state)
+                            opt_state, compute_loss_stateless_model)
 
         acc1, acc5, loss = func_validate(config, data_loader_val, fmodel, params, buffers)
         logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
@@ -389,8 +395,9 @@ def fmain(config):
     logger.info('Training time {}'.format(total_time_str))
         
     
+        
 def fmodel_train(config, fmodel, params, buffers, criterion, data_loader, optimizer,\
-                epoch, mixup_fn, opt_state):
+                epoch, mixup_fn, opt_state, compute_loss_stateless_model):
 
     fmodel.train()
     # optimizer.zero_grad()
@@ -404,13 +411,13 @@ def fmodel_train(config, fmodel, params, buffers, criterion, data_loader, optimi
     start = time.time()
     end = time.time()
     
-    def compute_loss_stateless_model(params, buffers, sample, target):
-        batch = sample.unsqueeze(0)
-        targets = target.unsqueeze(0)
+    # def compute_loss_stateless_model(params, buffers, sample, target):
+    #     batch = sample.unsqueeze(0)
+    #     targets = target.unsqueeze(0)
 
-        predictions = fmodel(params, buffers, batch) 
-        loss = criterion(predictions, targets)
-        return loss
+    #     predictions = fmodel(params, buffers, batch) 
+    #     loss = criterion(predictions, targets)
+    #     return loss
     
     
     for idx, (samples, targets) in enumerate(data_loader):
@@ -455,6 +462,7 @@ def fmodel_train(config, fmodel, params, buffers, criterion, data_loader, optimi
                 f'eta {datetime.timedelta(seconds=int(etas))} \t'
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})\t'
                 f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
+                # f'loss_scale {scaler_meter.val:.4f} ({scaler_meter.avg:.4f})\t'
                 f'mem {memory_used:.0f}MB')
     epoch_time = time.time() - start
     logger.info(f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}")
@@ -464,7 +472,8 @@ def fmodel_train(config, fmodel, params, buffers, criterion, data_loader, optimi
 def func_validate(config, data_loader, fmodel, fparams, fbuffers):
     criterion = torch.nn.CrossEntropyLoss()
     fmodel.eval()
-
+    # for i, p in enumerate(model.parameters()):
+    #     p.data.copy_(fparams[i])
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     acc1_meter = AverageMeter()
@@ -506,6 +515,7 @@ def func_validate(config, data_loader, fmodel, fparams, fbuffers):
                 f'Mem {memory_used:.0f}MB')
     logger.info(f' * Acc@1 {acc1_meter.avg:.3f} Acc@5 {acc5_meter.avg:.3f}')
     return acc1_meter.avg, acc5_meter.avg, loss_meter.avg
+
 
 if __name__ == '__main__':
     args, config = parse_option()
@@ -555,8 +565,9 @@ if __name__ == '__main__':
             f.write(config.dump())
         logger.info(f"Full config saved to {path}")
 
+    # print config
     logger.info(config.dump())
     logger.info(json.dumps(vars(args)))
-    
-    # fmain(config)
-    main(config)
+
+    # main(config)
+    fmain(config)
